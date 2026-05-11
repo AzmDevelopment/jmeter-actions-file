@@ -1,0 +1,118 @@
+name: Run JMeter on Merge to Main
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  jmeter-load-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Show current files
+        run: |
+          echo "Current directory:"
+          pwd
+          echo "Files:"
+          ls -al
+
+      - name: Create test_report directory
+        run: mkdir -p test_report
+
+      - name: Install Java & JMeter
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip default-jdk
+          wget https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-5.6.3.zip
+          unzip apache-jmeter-5.6.3.zip
+          cd apache-jmeter-5.6.3/bin
+          ./jmeter -v
+
+      - name: Download and Add SQL Server JDBC Driver
+        run: |
+          wget https://repo1.maven.org/maven2/com/microsoft/sqlserver/mssql-jdbc/12.6.1.jre11/mssql-jdbc-12.6.1.jre11.jar \
+            -O apache-jmeter-5.6.3/lib/mssql-jdbc.jar
+
+      - name: Run JMeter .jmx scripts and generate CSV + HTML report
+        run: |
+          for i in $(ls *.jmx); do
+            mkdir -p test_report/${i%.jmx}
+            ./apache-jmeter-5.6.3/bin/jmeter \
+              -Jjmeter.save.saveservice.output_format=csv \
+              -n -t "$i" \
+              -l "${i%.jmx}.jtl" \
+              -e -o "test_report/${i%.jmx}"
+              cp "${i%.jmx}.jtl" "${i%.jmx}.csv"
+
+          done
+
+      - name: Move all .csv result files into report folder
+        run: mv *.csv test_report/
+
+      - name: Upload JMeter Report Folder as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jmeter-test-report
+          path: test_report
+          
+      - name: Deploy HTML Report to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          personal_token: ${{ secrets.GH_PAT }}
+          publish_dir: ./test_report
+          
+      - name: Validate Performance Thresholds
+        run: |
+          echo "Validating average response time..."
+          CSV_FILE=$(find test_report -name '*.csv' | head -n 1)
+          echo "Using file: $CSV_FILE"
+          AVG=$(awk -F',' '{ if ($2 ~ /^[0-9]+$/) sum+=$2; n++ } END { if (n>0) print int(sum/n); else print 0 }' "$CSV_FILE")
+          echo "Average Response Time: ${AVG} ms"
+          THRESHOLD=1000
+          if (( $(echo "$AVG > $THRESHOLD" | bc -l) )); then
+            echo " Test failed: ${AVG}ms > ${THRESHOLD}ms"
+            exit 1
+          else
+            echo " Performance is acceptable: ${AVG}ms"
+          fi
+
+      - name: Notify Slack with Metrics
+        if: always()
+        run: |
+          CSV_FILE=$(find test_report -name '*.csv' | head -n 1)
+          TOTAL=$(grep -c '' "$CSV_FILE")
+          FAILS=$(grep -i ',false' "$CSV_FILE" | wc -l)
+          AVG=$(awk -F',' '{ if ($2 ~ /^[0-9]+$/) sum+=$2; n++ } END { if (n>0) print int(sum/n); else print 0 }' "$CSV_FILE")
+
+          STATUS="passed"
+          COLOR="good"
+          if [ "${{ job.status }}" != "success" ]; then
+            STATUS="failed"
+            COLOR="danger"
+          fi
+
+          REPORT_URL="https://laibaimran001.github.io/jmeter-demo/Maneh/"
+
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"attachments\": [{
+              \"color\": \"${COLOR}\",
+              \"title\": \"JMeter Tests ${STATUS} - ${GITHUB_REPOSITORY}\",
+              \"text\": \"*Branch:* ${GITHUB_REF_NAME}\n*Avg Time:* ${AVG}ms\n*Failures:* ${FAILS}/${TOTAL}\n📊 <${REPORT_URL}|View Report>\"
+            }]
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
+
+
+      - name: Send Media to Slack
+        if: always()
+        run: |
+          MEME_URL="https://i.imgflip.com/9w15xp.jpg"
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{\"attachments\": [{\"fallback\": \"JMeter Meme\", \"image_url\": \"${MEME_URL}\", \"title\": \"Passed\"}]}" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
