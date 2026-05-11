@@ -1,1 +1,1 @@
-# jmeter-demo
+Developed a GitHub Actions workflow YAML file that automates performance testing using Apache JMeter. By simply adding a JMeter .jmx test file to the repository, the workflow automatically triggers on events such as code pushes or pull requests, executes the performance tests, generates and publishes performance metrics/reports, and sends the test results and notifications to a specified Slack channel for monitoring and collaboration.
